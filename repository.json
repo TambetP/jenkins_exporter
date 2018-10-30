@@ -1,0 +1,11 @@
+{
+    "name": "Jenkins Exporter",
+    "description": "No desc yet.",
+    "owner": "DevOps Tooling Tribe",
+    "type": "service",
+    "status": "released",
+    "tags": [
+    ],
+    "region-type": "",
+    "service-dependencies": []
+    }

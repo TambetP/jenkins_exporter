@@ -16,50 +16,58 @@ DEBUG = int(os.environ.get('DEBUG', '0'))
 COLLECTION_TIME = Summary('jenkins_collector_collect_seconds', 'Time spent to collect metrics from Jenkins')
 
 class JenkinsCollector(object):
-    # The build statuses we want to export about.
-    statuses = ["lastBuild", "lastCompletedBuild", "lastFailedBuild",
-                "lastStableBuild", "lastSuccessfulBuild", "lastUnstableBuild",
-                "lastUnsuccessfulBuild"]
+    currentBuildStatus = "currentBuild"
+    offlineNodes = "offlineNodes"
 
     def __init__(self, target, user, password, insecure):
-        self._target = target.rstrip("/")
+        if not os.environ.get('JENKINS_SERVER'):
+            if os.environ.get('ENV_ID') == 'live':
+                self._target = 'http://jenkins.pipedrive.tools'
+            else:
+                self._target = 'http://jenkins.pipedrivetest.tools'
+        else:
+            self._target = target
+        self._target_computer = self._target + '/computer'
         self._user = user
         self._password = password
         self._insecure = insecure
 
     def collect(self):
         start = time.time()
-
         # Request data from Jenkins
-        jobs = self._request_data()
+        response = self._request_data_from_executors();
 
         self._setup_empty_prometheus_metrics()
 
-        for job in jobs:
-            name = job['fullName']
+        for offlineNode in response['offlineNodes']:
             if DEBUG:
-                print("Found Job: {}".format(name))
-                pprint(job)
-            self._get_metrics(name, job)
+                print("Found Offline Node: {}".format(offlineNode))
+                pprint(offlineNode)
+            self._get_offline_node_metrics(offlineNode)
 
-        for status in self.statuses:
-            for metric in self._prometheus_metrics[status].values():
-                yield metric
+        for currentBuild in response['currentBuilds']:
+            if DEBUG:
+                print("Found Current Build: {}".format(currentBuild))
+                pprint(currentBuild)
+            self._get_duration_for_current_builds(currentBuild)
+
+        for metric in self._prometheus_metrics[self.currentBuildStatus].values():
+            yield metric
+
+        for metric in self._prometheus_metrics[self.offlineNodes].values():
+            yield metric
 
         duration = time.time() - start
         COLLECTION_TIME.observe(duration)
 
-    def _request_data(self):
-        # Request exactly the information we need from Jenkins
-        url = '{0}/api/json'.format(self._target)
-        jobs = "[fullName,number,timestamp,duration,actions[queuingDurationMillis,totalDurationMillis," \
-               "skipCount,failCount,totalCount,passCount]]"
-        tree = 'jobs[fullName,url,{0}]'.format(','.join([s + jobs for s in self.statuses]))
+    def _request_data_from_executors(self):
+        url = '{0}/api/json'.format(self._target_computer)
+        tree = 'computer[displayName,offline,offlineCause[timestamp],offlineCauseReason,executors[currentExecutable[url]],oneOffExecutors[currentExecutable[url]]]'
         params = {
             'tree': tree,
         }
 
-        def parsejobs(myurl):
+        def parseExecutors(myurl):
             # params = tree: jobs[name,lastBuild[number,timestamp,duration,actions[queuingDurationMillis...
             if self._user and self._password:
                 response = requests.get(myurl, params=params, auth=(self._user, self._password), verify=(not self._insecure))
@@ -73,84 +81,97 @@ class JenkinsCollector(object):
             if DEBUG:
                 pprint(result)
 
-            jobs = []
-            for job in result['jobs']:
-                if job['_class'] == 'com.cloudbees.hudson.plugins.folder.Folder' or \
-                   job['_class'] == 'jenkins.branch.OrganizationFolder' or \
-                   job['_class'] == 'org.jenkinsci.plugins.workflow.multibranch.WorkflowMultiBranchProject':
-                    jobs += parsejobs(job['url'] + '/api/json')
-                else:
-                    jobs.append(job)
-            return jobs
+            currentbuilds = []
+            offlineNodes = []
+            for node in result['computer']:
+                # Check for offline nodes and collect timestamps
+                if node['offline']:
+                    offlineNodes.append(
+                        {
+                            'name': node['displayName'],
+                            'timestamp': node['offlineCause']['timestamp']
+                        }
+                    )
 
-        return parsejobs(url)
+                # Check for currentExecutables in executors
+                for executable in node['executors']:
+                    if executable['currentExecutable']:
+                        currentbuilds.append(executable['currentExecutable']['url'])
+
+                for executable in node['oneOffExecutors']:
+                    if executable['currentExecutable']:
+                        currentbuilds.append(executable['currentExecutable']['url'])
+                
+            return {
+                'currentBuilds': currentbuilds,
+                'offlineNodes': offlineNodes
+            }
+
+        return parseExecutors(url)
+
+    def _get_duration_of_build(self, jobUrl):
+        url = '{0}/api/json'.format(jobUrl)
+        tree = 'timestamp'
+        params = {
+            'tree': tree,
+        }
+
+        def parseFields(myurl):
+            # params = tree: jobs[name,lastBuild[number,timestamp,duration,actions[queuingDurationMillis...
+            if self._user and self._password:
+                response = requests.get(myurl, params=params, auth=(self._user, self._password), verify=(not self._insecure))
+            else:
+                response = requests.get(myurl, params=params, verify=(not self._insecure))
+            if DEBUG:
+                pprint(response.text)
+            if response.status_code != requests.codes.ok:
+                raise Exception("Call to url %s failed with status: %s" % (myurl, response.status_code))
+            result = response.json()
+            if DEBUG:
+                pprint(result)
+
+            return {
+                'timestamp': result['timestamp']
+            }
+
+        return parseFields(url)
 
     def _setup_empty_prometheus_metrics(self):
         # The metrics we want to export.
         self._prometheus_metrics = {}
-        for status in self.statuses:
-            snake_case = re.sub('([A-Z])', '_\\1', status).lower()
-            self._prometheus_metrics[status] = {
-                'number':
-                    GaugeMetricFamily('jenkins_job_{0}'.format(snake_case),
-                                      'Jenkins build number for {0}'.format(status), labels=["jobname"]),
-                'duration':
-                    GaugeMetricFamily('jenkins_job_{0}_duration_seconds'.format(snake_case),
-                                      'Jenkins build duration in seconds for {0}'.format(status), labels=["jobname"]),
-                'timestamp':
-                    GaugeMetricFamily('jenkins_job_{0}_timestamp_seconds'.format(snake_case),
-                                      'Jenkins build timestamp in unixtime for {0}'.format(status), labels=["jobname"]),
-                'queuingDurationMillis':
-                    GaugeMetricFamily('jenkins_job_{0}_queuing_duration_seconds'.format(snake_case),
-                                      'Jenkins build queuing duration in seconds for {0}'.format(status),
-                                      labels=["jobname"]),
-                'totalDurationMillis':
-                    GaugeMetricFamily('jenkins_job_{0}_total_duration_seconds'.format(snake_case),
-                                      'Jenkins build total duration in seconds for {0}'.format(status), labels=["jobname"]),
-                'skipCount':
-                    GaugeMetricFamily('jenkins_job_{0}_skip_count'.format(snake_case),
-                                      'Jenkins build skip counts for {0}'.format(status), labels=["jobname"]),
-                'failCount':
-                    GaugeMetricFamily('jenkins_job_{0}_fail_count'.format(snake_case),
-                                      'Jenkins build fail counts for {0}'.format(status), labels=["jobname"]),
-                'totalCount':
-                    GaugeMetricFamily('jenkins_job_{0}_total_count'.format(snake_case),
-                                      'Jenkins build total counts for {0}'.format(status), labels=["jobname"]),
-                'passCount':
-                    GaugeMetricFamily('jenkins_job_{0}_pass_count'.format(snake_case),
-                                      'Jenkins build pass counts for {0}'.format(status), labels=["jobname"]),
-            }
 
-    def _get_metrics(self, name, job):
-        for status in self.statuses:
-            if status in job.keys():
-                status_data = job[status] or {}
-                self._add_data_to_prometheus_structure(status, status_data, job, name)
+        current_builds = re.sub('([A-Z])', '_\\1', self.currentBuildStatus).lower()
+        self._prometheus_metrics[self.currentBuildStatus] = {
+            'timestamp':
+                GaugeMetricFamily('jenkins_job_{0}'.format(current_builds),
+                                    'Jenkins current build timestamp in unixtime for {0}'.format(self.currentBuildStatus), labels=["joburl"]),
+        }
 
-    def _add_data_to_prometheus_structure(self, status, status_data, job, name):
+
+        offline_nodes = re.sub('([A-Z])', '_\\1', self.offlineNodes).lower()
+        self._prometheus_metrics[self.offlineNodes] = {
+            'timestamp':
+                GaugeMetricFamily('jenkins_job_{0}'.format(offline_nodes),
+                                    'Jenkins node offline timestamp in unixtime for {0}'.format(self.offlineNodes), labels=["name"]),
+        }
+
+    def _get_offline_node_metrics(self, node):
+        self._add_offline_node_data_to_prometheus_structure(node, node['name'])
+
+    def _get_duration_for_current_builds(self, url):
+        result = self._get_duration_of_build(url)
+        self._add_current_build_duration_data_to_prometheus_structure(result, url)
+
+    def _add_offline_node_data_to_prometheus_structure(self, result, name):
+        if result.get('timestamp', 0):
+            self._prometheus_metrics[self.offlineNodes]['timestamp'].add_metric([name], result.get('timestamp'))
+    
+    def _add_current_build_duration_data_to_prometheus_structure(self, result, url):
         # If there's a null result, we want to pass.
-        if status_data.get('duration', 0):
-            self._prometheus_metrics[status]['duration'].add_metric([name], status_data.get('duration') / 1000.0)
-        if status_data.get('timestamp', 0):
-            self._prometheus_metrics[status]['timestamp'].add_metric([name], status_data.get('timestamp') / 1000.0)
-        if status_data.get('number', 0):
-            self._prometheus_metrics[status]['number'].add_metric([name], status_data.get('number'))
-        actions_metrics = status_data.get('actions', [{}])
-        for metric in actions_metrics:
-            if metric.get('queuingDurationMillis', False):
-                self._prometheus_metrics[status]['queuingDurationMillis'].add_metric([name], metric.get('queuingDurationMillis') / 1000.0)
-            if metric.get('totalDurationMillis', False):
-                self._prometheus_metrics[status]['totalDurationMillis'].add_metric([name], metric.get('totalDurationMillis') / 1000.0)
-            if metric.get('skipCount', False):
-                self._prometheus_metrics[status]['skipCount'].add_metric([name], metric.get('skipCount'))
-            if metric.get('failCount', False):
-                self._prometheus_metrics[status]['failCount'].add_metric([name], metric.get('failCount'))
-            if metric.get('totalCount', False):
-                self._prometheus_metrics[status]['totalCount'].add_metric([name], metric.get('totalCount'))
-                # Calculate passCount by subtracting fails and skips from totalCount
-                passcount = metric.get('totalCount') - metric.get('failCount') - metric.get('skipCount')
-                self._prometheus_metrics[status]['passCount'].add_metric([name], passcount)
+        if result.get('timestamp', 0):
+            self._prometheus_metrics[self.currentBuildStatus]['timestamp'].add_metric([url], result.get('timestamp'))
 
+    
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -161,7 +182,7 @@ def parse_args():
         metavar='jenkins',
         required=False,
         help='server url from the jenkins api',
-        default=os.environ.get('JENKINS_SERVER', 'http://jenkins:8080')
+        default=os.environ.get('JENKINS_SERVER', '')
     )
     parser.add_argument(
         '--user',
@@ -202,9 +223,9 @@ def main():
         port = int(args.port)
         REGISTRY.register(JenkinsCollector(args.jenkins, args.user, args.password, args.insecure))
         start_http_server(port)
-        print("Polling {}. Serving at port: {}".format(args.jenkins, port))
+        print("Polling every 30 sec. Serving at port: {}".format(args.jenkins, port))
         while True:
-            time.sleep(1)
+            time.sleep(30)
     except KeyboardInterrupt:
         print(" Interrupted")
         exit(0)
