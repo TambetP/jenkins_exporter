@@ -23,19 +23,11 @@ For more information see (http://www.robustperception.io/writing-a-jenkins-expor
 
 #### Example
 
-    docker run -d -p 9118:9118 lovoo/jenkins_exporter:latest -j http://jenkins:8080 -p 9118
-
+    docker run -d -p 9118:9118 pipedrive/jenkins_exporter:latest
 
 ## Installation
 
-    git clone git@github.com:lovoo/jenkins_exporter.git
+    git clone git@github.com:pipedrive/jenkins_exporter.git
     cd jenkins_exporter
     pip install -r requirements.txt
 
-## Contributing
-
-1. Fork it!
-2. Create your feature branch: `git checkout -b my-new-feature`
-3. Commit your changes: `git commit -am 'Add some feature'`
-4. Push to the branch: `git push origin my-new-feature`
-5. Submit a pull request
