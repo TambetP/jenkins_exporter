@@ -1,0 +1,21 @@
+FROM python:2-slim
+
+RUN mkdir -p /usr/src/app
+WORKDIR /usr/src/app
+
+COPY requirements.txt /usr/src/app
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY jenkins_exporter.py /usr/src/app
+
+ENV VIRTUAL_PORT=9118 \
+    DEBUG=0 \
+    SERVICE_NAME=jenkins-exporter \
+	SERVICE_TAGS="jenkins-exporter, fabiourl-test-jenkins-exporter.pipedrivetest.tools/,fabiourl-live-jenkins-exporter.pipedrive.tools/" \
+	SERVICE_CHECK_HTTP=/health-jenkins_exporter \
+	SERVICE_CHECK_INTERVAL=10s \
+	SERVICE_CHECK_TIMEOUT=5s
+
+EXPOSE $VIRTUAL_PORT
+
+ENTRYPOINT [ "python", "-u", "./jenkins_exporter.py" ]
