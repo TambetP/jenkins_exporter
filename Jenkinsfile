@@ -72,7 +72,7 @@ def deploy(){
             env.DOCKER_CERT_PATH="/var/lib/jenkins/.docker/swarmee"
             env.DOCKER_HOST = "tcp://local-swarm-manager.pipedrive.tools:443"
         }
-        command = "docker-hack stack deploy -c docker-compose.deploy.yml ${fullStackName}"
+        command = "docker stack deploy -c docker-compose.deploy.yml ${fullStackName}"
     }
     print "DOCKER_CERT_PATH = ${DOCKER_CERT_PATH}"
     print "DOCKER_HOST = ${DOCKER_HOST}"
