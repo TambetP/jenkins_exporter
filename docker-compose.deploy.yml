@@ -1,0 +1,29 @@
+version: '3.5'
+services:
+  jenkins-exporter:
+    image: pipedrive/jenkins_exporter:${DOCKER_TAG}
+    ports:
+      - target: 9118
+        mode: host
+    deploy:
+      replicas: ${SCALE_INSTANCES}
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          cpus: '0.1'
+          memory: 64M
+      restart_policy:
+        delay: 1s
+        window: 10s
+      placement:
+        constraints:
+          - node.labels.com.pipedrive.nodegroup == ${NODE_GROUP:-default}
+      labels:
+        - com.docker.ucp.access.label=/Shared
+    environment:
+      SERVICE_DESC: "jenkins-exporter"
+      ENV_ID: ${ENV_ID}
+      REGION_NAME: ${REGION_NAME}
+    stop_grace_period: 1m
