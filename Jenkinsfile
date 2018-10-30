@@ -62,7 +62,7 @@ def dockerPush(){
 def deploy(){
     command = ""
     env.DOCKER_TLS_VERIFY = 1
-    fullStackName = REGION_NAME + '_' + ENV_ID + '_' + 'swarm-exporter' 
+    fullStackName = REGION_NAME + '_' + ENV_ID + '_' + 'jenkins_exporter' 
     if (params.REGION_NAME == "management") {
         if(params.ENV_ID == "test"){
             env.DOCKER_CERT_PATH="/var/lib/jenkins/.docker/swarmee"
